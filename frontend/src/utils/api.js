@@ -36,6 +36,13 @@ export const artistAPI = {
   exportExcel: () => api.get('/artists/export/excel', { responseType: 'blob' }),
 }
 
+export const artistExpenseAPI = {
+  list: (p) => api.get('/artist-expenses', { params: p }),
+  create: (d) => api.post('/artist-expenses', d),
+  update: (id, d) => api.put(`/artist-expenses/${id}`, d),
+  delete: (id) => api.delete(`/artist-expenses/${id}`),
+}
+
 export const eventAPI = {
   list: (p) => api.get('/events', { params: p }),
   get: (id) => api.get(`/events/${id}`),
@@ -58,10 +65,10 @@ export const venueAPI = {
 
 export const expenseAPI = {
   list: (p) => api.get('/expenses', { params: p }),
-  summary: (fy) => api.get('/expenses/summary', { params: { fy } }),
+  summary: (p) => api.get('/expenses/summary', { params: p }),
   create: (d) => api.post('/expenses', d),
   update: (id, d) => api.put(`/expenses/${id}`, d),
-  exportExcel: (fy) => api.get('/expenses/export/excel', { params: { fy }, responseType: 'blob' }),
+  exportExcel: (p) => api.get('/expenses/export/excel', { params: p, responseType: 'blob' }),
 }
 
 export const reportAPI = {

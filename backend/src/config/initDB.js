@@ -82,6 +82,42 @@ async function initDB() {
         created_at    TIMESTAMP DEFAULT NOW(),
         UNIQUE(month, year)
       );
+
+      CREATE TABLE IF NOT EXISTS artist_expenses (
+        id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        artist_id             UUID REFERENCES artists(id) ON DELETE CASCADE,
+        event_id              UUID REFERENCES events(id) ON DELETE SET NULL,
+        performance_fee       NUMERIC(12,2) DEFAULT 0,
+        travel_expense        NUMERIC(12,2) DEFAULT 0,
+        accommodation_expense NUMERIC(12,2) DEFAULT 0,
+        other_expenses        NUMERIC(12,2) DEFAULT 0,
+        total_expense         NUMERIC(12,2) DEFAULT 0,
+        remarks               TEXT,
+        created_at            TIMESTAMP DEFAULT NOW(),
+        updated_at            TIMESTAMP DEFAULT NOW()
+      );
+    `)
+
+    // Add new columns to existing tables (safe for existing installs)
+    await client.query(`
+      ALTER TABLE artists
+        ADD COLUMN IF NOT EXISTS educational_qualification       VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS educational_qualification_other TEXT,
+        ADD COLUMN IF NOT EXISTS artistic_qualification          VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS artistic_qualification_other    TEXT,
+        ADD COLUMN IF NOT EXISTS caste                          VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS caste_other                    TEXT,
+        ADD COLUMN IF NOT EXISTS art_form_other                 TEXT,
+        ADD COLUMN IF NOT EXISTS aadhaar_number                 VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS profile_photo                  TEXT;
+
+      ALTER TABLE events
+        ADD COLUMN IF NOT EXISTS category     VARCHAR(50) DEFAULT 'Performing',
+        ADD COLUMN IF NOT EXISTS press_links  JSONB DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS event_photos JSONB DEFAULT '[]'::jsonb;
+
+      ALTER TABLE expenses
+        ADD COLUMN IF NOT EXISTS remarks TEXT;
     `)
 
     console.log('Tables created.')

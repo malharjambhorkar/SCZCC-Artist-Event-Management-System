@@ -56,15 +56,20 @@ exports.getArtistEvents = async (req, res, next) => {
 
 exports.createEvent = async (req, res, next) => {
   try {
-    const { name, date, venue_id, art_form, participants_max, status='upcoming', description='', assigned_artists=[] } = req.body
+    const {
+      name, date, venue_id, art_form, participants_max, status='upcoming', description='',
+      assigned_artists=[], category='Performing', press_links=[], event_photos=[]
+    } = req.body
     let venue_name = ''
     if (venue_id) {
       const vr = await query('SELECT name FROM venues WHERE id=$1', [venue_id])
       venue_name = vr.rows[0]?.name || ''
     }
     const { rows } = await query(
-      `INSERT INTO events (name,date,venue_id,venue_name,art_form,participants_max,status,description) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [name, date, venue_id||null, venue_name, art_form, Number(participants_max), status, description]
+      `INSERT INTO events (name,date,venue_id,venue_name,art_form,participants_max,status,description,category,press_links,event_photos)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [name, date, venue_id||null, venue_name, art_form, Number(participants_max), status, description,
+       category, JSON.stringify(press_links), JSON.stringify(event_photos)]
     )
     const ev = rows[0]
     for (const aid of assigned_artists)
@@ -76,7 +81,7 @@ exports.createEvent = async (req, res, next) => {
 
 exports.updateEvent = async (req, res, next) => {
   try {
-    const fields = ['name','date','venue_id','art_form','participants_current','participants_max','status','description']
+    const fields = ['name','date','venue_id','art_form','participants_current','participants_max','status','description','category']
     const updates = [], params = []
     let p = 1
     if (req.body.venue_id) {
@@ -84,6 +89,8 @@ exports.updateEvent = async (req, res, next) => {
       if (vr.rows[0]) { updates.push(`venue_name=$${p}`); params.push(vr.rows[0].name); p++ }
     }
     fields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=$${p}`); params.push(req.body[f]); p++ } })
+    if (req.body.press_links !== undefined) { updates.push(`press_links=$${p}`); params.push(JSON.stringify(req.body.press_links)); p++ }
+    if (req.body.event_photos !== undefined) { updates.push(`event_photos=$${p}`); params.push(JSON.stringify(req.body.event_photos)); p++ }
     if (!updates.length) return res.status(400).json({ success: false, message: 'Nothing to update' })
     updates.push('updated_at=NOW()'); params.push(req.params.id)
     const { rows } = await query(`UPDATE events SET ${updates.join(',')} WHERE id=$${p} RETURNING *`, params)
@@ -206,14 +213,32 @@ exports.exportVenuesExcel = async (req, res, next) => {
 // ══════════════════════════════════════
 // EXPENSE CONTROLLER
 // ══════════════════════════════════════
+const MONTH_ORDER = `array_position(ARRAY['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'],month)`
+const MONTH_TO_NUM = `CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 WHEN 'Mar' THEN 3 WHEN 'Apr' THEN 4 WHEN 'May' THEN 5 WHEN 'Jun' THEN 6 WHEN 'Jul' THEN 7 WHEN 'Aug' THEN 8 WHEN 'Sep' THEN 9 WHEN 'Oct' THEN 10 WHEN 'Nov' THEN 11 WHEN 'Dec' THEN 12 END`
+
+function buildExpenseWhere(query_params) {
+  const { fy, start_date, end_date } = query_params
+  if (start_date && end_date) {
+    return {
+      where: `WHERE make_date(year, ${MONTH_TO_NUM}, 1) BETWEEN $1::date AND $2::date`,
+      params: [start_date, end_date],
+      label: `${start_date} to ${end_date}`
+    }
+  }
+  const fyVal = fy || '2024-25'
+  const [sy] = fyVal.split('-').map(Number)
+  return {
+    where: `WHERE (month=ANY($1) AND year=$2) OR (month=ANY($3) AND year=$4)`,
+    params: [['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],sy,['Jan','Feb','Mar'],sy+1],
+    label: fyVal
+  }
+}
+
 exports.getExpenseSummary = async (req, res, next) => {
   try {
-    const { fy='2024-25' } = req.query
-    const [sy] = fy.split('-').map(Number)
+    const { where, params, label } = buildExpenseWhere(req.query)
     const { rows } = await query(
-      `SELECT * FROM expenses WHERE (month=ANY($1) AND year=$2) OR (month=ANY($3) AND year=$4)
-       ORDER BY year, array_position(ARRAY['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'],month)`,
-      [['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],sy,['Jan','Feb','Mar'],sy+1]
+      `SELECT * FROM expenses ${where} ORDER BY year, ${MONTH_ORDER}`, params
     )
     const total = rows.reduce((s,r)=>s+Number(r.amount),0)
     const avgMonthly = rows.length ? Math.round(total/rows.length) : 0
@@ -222,10 +247,10 @@ exports.getExpenseSummary = async (req, res, next) => {
     const ct = {venue:0,equipment:0,travel:0,marketing:0,miscellaneous:0}
     rows.forEach(r=>{ ct.venue+=Number(r.venue||0); ct.equipment+=Number(r.equipment||0); ct.travel+=Number(r.travel||0); ct.marketing+=Number(r.marketing||0); ct.miscellaneous+=Number(r.miscellaneous||0) })
     res.json({ success:true, data:{
-      fy, total, avgMonthly,
+      label, total, avgMonthly,
       highest: highest?.id ? {amount:Number(highest.amount),period:`${highest.month} ${highest.year}`} : null,
       lowest:  lowest?.id  ? {amount:Number(lowest.amount), period:`${lowest.month} ${lowest.year}`}  : null,
-      monthly: rows.map(r=>({month:r.month,year:r.year,amount:Number(r.amount),categories:{venue:Number(r.venue),equipment:Number(r.equipment),travel:Number(r.travel),marketing:Number(r.marketing),miscellaneous:Number(r.miscellaneous)}})),
+      monthly: rows.map(r=>({month:r.month,year:r.year,amount:Number(r.amount),remarks:r.remarks||'',categories:{venue:Number(r.venue),equipment:Number(r.equipment),travel:Number(r.travel),marketing:Number(r.marketing),miscellaneous:Number(r.miscellaneous)}})),
       categoryTotals: ct,
     }})
   } catch (err) { next(err) }
@@ -233,11 +258,9 @@ exports.getExpenseSummary = async (req, res, next) => {
 
 exports.getExpenses = async (req, res, next) => {
   try {
-    const { fy='2024-25' } = req.query
-    const [sy] = fy.split('-').map(Number)
+    const { where, params } = buildExpenseWhere(req.query)
     const { rows } = await query(
-      `SELECT * FROM expenses WHERE (month=ANY($1) AND year=$2) OR (month=ANY($3) AND year=$4) ORDER BY year, array_position(ARRAY['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'],month)`,
-      [['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],sy,['Jan','Feb','Mar'],sy+1]
+      `SELECT * FROM expenses ${where} ORDER BY year, ${MONTH_ORDER}`, params
     )
     res.json({ success:true, data:rows })
   } catch (err) { next(err) }
@@ -245,10 +268,10 @@ exports.getExpenses = async (req, res, next) => {
 
 exports.createExpense = async (req, res, next) => {
   try {
-    const { month, year, amount, venue=0, equipment=0, travel=0, marketing=0, miscellaneous=0, event_id } = req.body
+    const { month, year, amount, venue=0, equipment=0, travel=0, marketing=0, miscellaneous=0, event_id, remarks='' } = req.body
     const { rows } = await query(
-      `INSERT INTO expenses (month,year,amount,venue,equipment,travel,marketing,miscellaneous,event_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [month, Number(year), Number(amount), Number(venue), Number(equipment), Number(travel), Number(marketing), Number(miscellaneous), event_id||null]
+      `INSERT INTO expenses (month,year,amount,venue,equipment,travel,marketing,miscellaneous,event_id,remarks) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [month, Number(year), Number(amount), Number(venue), Number(equipment), Number(travel), Number(marketing), Number(miscellaneous), event_id||null, remarks]
     )
     res.status(201).json({ success:true, message:'Expense created', data:rows[0] })
   } catch (err) {
@@ -259,10 +282,10 @@ exports.createExpense = async (req, res, next) => {
 
 exports.updateExpense = async (req, res, next) => {
   try {
-    const { amount, venue=0, equipment=0, travel=0, marketing=0, miscellaneous=0, event_id } = req.body
+    const { amount, venue=0, equipment=0, travel=0, marketing=0, miscellaneous=0, event_id, remarks='' } = req.body
     const { rows } = await query(
-      `UPDATE expenses SET amount=$1,venue=$2,equipment=$3,travel=$4,marketing=$5,miscellaneous=$6,event_id=$7 WHERE id=$8 RETURNING *`,
-      [Number(amount),Number(venue),Number(equipment),Number(travel),Number(marketing),Number(miscellaneous),event_id||null,req.params.id]
+      `UPDATE expenses SET amount=$1,venue=$2,equipment=$3,travel=$4,marketing=$5,miscellaneous=$6,event_id=$7,remarks=$8 WHERE id=$9 RETURNING *`,
+      [Number(amount),Number(venue),Number(equipment),Number(travel),Number(marketing),Number(miscellaneous),event_id||null,remarks,req.params.id]
     )
     if (!rows[0]) return res.status(404).json({ success:false, message:'Expense not found' })
     res.json({ success:true, message:'Expense updated', data:rows[0] })
@@ -271,20 +294,17 @@ exports.updateExpense = async (req, res, next) => {
 
 exports.exportExpensesExcel = async (req, res, next) => {
   try {
-    const { fy='2024-25' } = req.query
-    const [sy] = fy.split('-').map(Number)
+    const { where, params, label } = buildExpenseWhere(req.query)
     const { rows } = await query(
-      `SELECT month,year,amount,venue,equipment,travel,marketing,miscellaneous FROM expenses
-       WHERE (month=ANY($1) AND year=$2) OR (month=ANY($3) AND year=$4)
-       ORDER BY year, array_position(ARRAY['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'],month)`,
-      [['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],sy,['Jan','Feb','Mar'],sy+1]
+      `SELECT month,year,amount,venue,equipment,travel,marketing,miscellaneous,remarks FROM expenses
+       ${where} ORDER BY year, ${MONTH_ORDER}`, params
     )
-    const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet(`Expenses FY ${fy}`)
-    ws.columns=[{header:'Month',key:'month',width:10},{header:'Year',key:'year',width:8},{header:'Total (₹)',key:'amount',width:15},{header:'Venue (₹)',key:'venue',width:14},{header:'Equipment (₹)',key:'equipment',width:15},{header:'Travel (₹)',key:'travel',width:14},{header:'Marketing (₹)',key:'marketing',width:15},{header:'Misc (₹)',key:'miscellaneous',width:14}]
+    const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet(`Expenses ${label}`)
+    ws.columns=[{header:'Month',key:'month',width:10},{header:'Year',key:'year',width:8},{header:'Total (₹)',key:'amount',width:15},{header:'Venue (₹)',key:'venue',width:14},{header:'Equipment (₹)',key:'equipment',width:15},{header:'Travel (₹)',key:'travel',width:14},{header:'Marketing (₹)',key:'marketing',width:15},{header:'Misc (₹)',key:'miscellaneous',width:14},{header:'Remarks',key:'remarks',width:30}]
     ws.getRow(1).eachCell(c=>{c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFEA580C'}};c.font={color:{argb:'FFFFFFFF'},bold:true}})
     rows.forEach(r=>ws.addRow(r))
     res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition',`attachment; filename=expenses-${fy}.xlsx`)
+    res.setHeader('Content-Disposition',`attachment; filename=expenses-${label}.xlsx`)
     await wb.xlsx.write(res); res.end()
   } catch (err) { next(err) }
 }

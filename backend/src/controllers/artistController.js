@@ -36,14 +36,32 @@ exports.createArtist = async (req, res, next) => {
   const client = await getClient()
   try {
     await client.query('BEGIN')
-    const { full_name, email, phone, art_form, location, state, years_of_experience, biography, password = 'Password@123' } = req.body
+    const {
+      full_name, email, phone, art_form, art_form_other, location, state,
+      years_of_experience, biography, password = 'Password@123',
+      educational_qualification, educational_qualification_other,
+      artistic_qualification, artistic_qualification_other,
+      caste, caste_other, aadhaar_number, profile_photo
+    } = req.body
     const exists = await client.query('SELECT id FROM users WHERE email=$1', [email])
     if (exists.rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ success: false, message: 'Email already exists' }) }
     const hashed = await bcrypt.hash(password, 10)
     const ur = await client.query(`INSERT INTO users (email,password,role,name) VALUES ($1,$2,'artist',$3) RETURNING id`, [email, hashed, full_name])
     const ar = await client.query(
-      `INSERT INTO artists (user_id,full_name,email,phone,art_form,location,state,years_of_experience,biography) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [ur.rows[0].id, full_name, email, phone, art_form, location, state || location, Number(years_of_experience) || 0, biography || '']
+      `INSERT INTO artists (
+        user_id, full_name, email, phone, art_form, art_form_other, location, state,
+        years_of_experience, biography,
+        educational_qualification, educational_qualification_other,
+        artistic_qualification, artistic_qualification_other,
+        caste, caste_other, aadhaar_number, profile_photo
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+      [
+        ur.rows[0].id, full_name, email, phone, art_form, art_form_other||null,
+        location, state||location, Number(years_of_experience)||0, biography||'',
+        educational_qualification||null, educational_qualification_other||null,
+        artistic_qualification||null, artistic_qualification_other||null,
+        caste||null, caste_other||null, aadhaar_number||null, profile_photo||null
+      ]
     )
     await client.query('COMMIT')
     res.status(201).json({ success: true, message: 'Artist created', data: ar.rows[0] })
@@ -58,9 +76,19 @@ exports.updateArtist = async (req, res, next) => {
       const { rows } = await query('SELECT id FROM artists WHERE email=$1', [req.user.email])
       if (!rows[0] || rows[0].id !== id) return res.status(403).json({ success: false, message: 'Can only update own profile' })
     }
-    const allowedFields = req.user.role === 'admin'
-      ? ['full_name','phone','art_form','location','state','years_of_experience','biography','status','email']
-      : ['full_name','phone','art_form','location','state','years_of_experience','biography']
+    const adminFields = [
+      'full_name','phone','art_form','art_form_other','location','state','years_of_experience','biography','status','email',
+      'educational_qualification','educational_qualification_other',
+      'artistic_qualification','artistic_qualification_other',
+      'caste','caste_other','aadhaar_number','profile_photo'
+    ]
+    const artistFields = [
+      'full_name','phone','art_form','art_form_other','location','state','years_of_experience','biography',
+      'educational_qualification','educational_qualification_other',
+      'artistic_qualification','artistic_qualification_other',
+      'caste','caste_other','aadhaar_number','profile_photo'
+    ]
+    const allowedFields = req.user.role === 'admin' ? adminFields : artistFields
     const updates = [], params = []
     let p = 1
     allowedFields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=$${p}`); params.push(req.body[f]); p++ } })
@@ -132,5 +160,69 @@ exports.exportExcel = async (req, res, next) => {
     res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition','attachment; filename=artists.xlsx')
     await wb.xlsx.write(res); res.end()
+  } catch (err) { next(err) }
+}
+
+// ══════════════════════════════════════
+// ARTIST EXPENSES
+// ══════════════════════════════════════
+exports.getArtistExpenses = async (req, res, next) => {
+  try {
+    const { artist_id, event_id } = req.query
+    const conds = [], params = []
+    let p = 1
+    if (artist_id) { conds.push(`ae.artist_id=$${p}`); params.push(artist_id); p++ }
+    if (event_id)  { conds.push(`ae.event_id=$${p}`);  params.push(event_id);  p++ }
+    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : ''
+    const { rows } = await query(
+      `SELECT ae.*, a.full_name as artist_name, e.name as event_name
+       FROM artist_expenses ae
+       LEFT JOIN artists a ON ae.artist_id=a.id
+       LEFT JOIN events e ON ae.event_id=e.id
+       ${where} ORDER BY ae.created_at DESC`,
+      params
+    )
+    res.json({ success: true, data: rows })
+  } catch (err) { next(err) }
+}
+
+exports.createArtistExpense = async (req, res, next) => {
+  try {
+    const {
+      artist_id, event_id,
+      performance_fee=0, travel_expense=0, accommodation_expense=0, other_expenses=0, remarks=''
+    } = req.body
+    const total = Number(performance_fee) + Number(travel_expense) + Number(accommodation_expense) + Number(other_expenses)
+    const { rows } = await query(
+      `INSERT INTO artist_expenses
+        (artist_id, event_id, performance_fee, travel_expense, accommodation_expense, other_expenses, total_expense, remarks)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [artist_id, event_id||null, Number(performance_fee), Number(travel_expense), Number(accommodation_expense), Number(other_expenses), total, remarks]
+    )
+    res.status(201).json({ success: true, message: 'Artist expense created', data: rows[0] })
+  } catch (err) { next(err) }
+}
+
+exports.updateArtistExpense = async (req, res, next) => {
+  try {
+    const { performance_fee=0, travel_expense=0, accommodation_expense=0, other_expenses=0, remarks='' } = req.body
+    const total = Number(performance_fee) + Number(travel_expense) + Number(accommodation_expense) + Number(other_expenses)
+    const { rows } = await query(
+      `UPDATE artist_expenses
+       SET performance_fee=$1, travel_expense=$2, accommodation_expense=$3, other_expenses=$4,
+           total_expense=$5, remarks=$6, updated_at=NOW()
+       WHERE id=$7 RETURNING *`,
+      [Number(performance_fee), Number(travel_expense), Number(accommodation_expense), Number(other_expenses), total, remarks, req.params.id]
+    )
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Expense not found' })
+    res.json({ success: true, message: 'Artist expense updated', data: rows[0] })
+  } catch (err) { next(err) }
+}
+
+exports.deleteArtistExpense = async (req, res, next) => {
+  try {
+    const { rows } = await query('DELETE FROM artist_expenses WHERE id=$1 RETURNING id', [req.params.id])
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Expense not found' })
+    res.json({ success: true, message: 'Artist expense deleted' })
   } catch (err) { next(err) }
 }
