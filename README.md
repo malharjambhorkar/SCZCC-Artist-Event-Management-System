@@ -1,65 +1,80 @@
-# SCZCC Artist & Event Management System
+# Cultural Art Zone
 
-## 📌 Overview
-The SCZCC Artist & Event Management System is a full-stack web application developed to streamline the management of artists, cultural events, venues, and financial operations for the South Central Zone Cultural Centre (SCZCC).
+Full-stack artist, event, venue, and expense management system with role-based access for `admin`, `clerk`, and `artist`.
 
-The system provides efficient data handling, secure role-based access (admin, clerk, artist), and real-time tracking of events and expenses.
+## Structure
 
----
+```text
+caz/
+  backend/
+    src/
+      config/
+      controllers/
+      middleware/
+      routes/
+      utils/
+  frontend/
+    src/
+      components/
+        common/
+      context/
+      features/
+      pages/
+      utils/
+```
 
-## 🚀 Features
-- Role-based authentication (Admin, Clerk, Artist)
-- Artist and event management
-- Venue and expense tracking
-- Real-time data handling
-- Secure backend with PostgreSQL
+## Stack
 
----
+- Frontend: React, Vite, Tailwind CSS
+- Backend: Node.js, Express
+- Database: PostgreSQL
 
-## 🛠 Tech Stack
-**Frontend:**
-- React (Vite)
-- Tailwind CSS
+## Backend Setup
 
-**Backend:**
-- Node.js
-- Express.js
+Create `backend/.env`:
 
-**Database:**
-- PostgreSQL
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=caz_db
+DB_USER=postgres
+DB_PASSWORD=your_postgres_password
+JWT_SECRET=change_this_secret
+PORT=5000
+```
 
----
+Install and start:
 
-## ⚙️ Setup Instructions
-
-### 1. Clone the repository
-```bash
-git clone https://github.com/malharjambhorkar/SCZCC-Artist-Event-Management-System.git
-cd SCZCC-Artist-Event-Management-System
-
-#Backend Setup
+```powershell
 cd backend
 npm install
-npm start
+npm run db:init
+npm run dev
+```
 
-#Frontend Setup
+If the database does not exist yet:
+
+```sql
+CREATE DATABASE caz_db;
+```
+
+## Frontend Setup
+
+```powershell
 cd frontend
 npm install
 npm run dev
-
 ```
-## 🔧 Environment Setup
-Create a `.env` file inside the backend folder based on `.env.example` and add your database credentials.
 
----
+## Demo Credentials
 
-🔑 Demo Credentials
-Admin: admin@culturalzone.com
- / admin123
-Clerk: clerk@culturalzone.com
- / clerk123
-Artist: john@example.com
- / password123
+- Admin: `admin@culturalzone.com` / `admin123`
+- Clerk: `clerk@culturalzone.com` / `clerk123`
+- Artist: `john@example.com` / `password123`
 
-## Author
-Malhar Jambhorkar
+## Notes
+
+- `npm run db:init` is safe to rerun for schema updates.
+- Shared UI lives under `frontend/src/components/common`.
+- Reusable domain-specific UI and helpers live under `frontend/src/features`.
+- Backend controller helpers live under `backend/src/utils`.

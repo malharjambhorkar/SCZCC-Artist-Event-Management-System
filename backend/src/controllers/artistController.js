@@ -1,15 +1,12 @@
 const bcrypt = require('bcryptjs')
 const { query, getClient } = require('../config/db')
 const ExcelJS = require('exceljs')
+const { trimOrNull } = require('../utils/validation')
+const { ensureRecordExists } = require('../utils/dbChecks')
+const { parseExpenseAmount } = require('../utils/expense')
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const AADHAAR_RE = /^\d{12}$/
-
-const trimOrNull = (value) => {
-  if (value === undefined || value === null) return null
-  const trimmed = String(value).trim()
-  return trimmed || null
-}
 
 const parseNonNegativeInt = (value, fallback = 0) => {
   if (value === undefined || value === null || value === '') return fallback
@@ -52,18 +49,6 @@ function validateArtistPayload(payload, { isCreate = false, allowEmail = false }
   }
 
   return { normalized }
-}
-
-async function ensureRecordExists(client, table, id) {
-  if (!id) return true
-  const { rows } = await client.query(`SELECT id FROM ${table} WHERE id=$1`, [id])
-  return Boolean(rows[0])
-}
-
-function parseExpenseAmount(value) {
-  if (value === undefined || value === null || value === '') return 0
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
 }
 
 exports.getArtists = async (req, res, next) => {

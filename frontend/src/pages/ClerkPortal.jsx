@@ -3,12 +3,12 @@ import { Search, Eye, Edit, UserCheck, UserX, Filter, Download, Loader, X, Users
 import toast from 'react-hot-toast'
 import { Navbar, StatCard, Modal, ConfirmModal, IconBtn } from '../components/common/index.jsx'
 import { artistAPI, artistExpenseAPI, eventAPI, venueAPI, expenseAPI, downloadBlob } from '../utils/api'
+import { ART_FORMS, EVENT_CATEGORIES, FY_OPTIONS, fmt } from '../features/portal/constants.js'
+import SharedEventForm from '../features/events/EventForm.jsx'
+import SharedExpenseEntryForm from '../features/expenses/ExpenseEntryForm.jsx'
+import SharedArtistExpenseForm from '../features/artist-expenses/ArtistExpenseForm.jsx'
 
-const ART_FORMS = ['Traditional Dance','Classical Music','Pottery','Folk Painting','Traditional Theatre','Weaving','Wood Carving','Sculpture','Embroidery','Puppetry','Folk Music']
 const STATES    = ['Maharashtra','Madhya Pradesh','Karnataka','Chhattisgarh','Andra Pradesh','Telangana','Others']
-const EVENT_CATEGORIES = ['Performing','Workshops']
-const FY_OPTIONS = ['2024-25','2023-24','2022-23']
-const fmt = n => new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR',maximumFractionDigits:0}).format(n||0)
 
 export default function ClerkPortal() {
   const [tab, setTab] = useState('artists')
@@ -277,8 +277,8 @@ function ClerkEventsTab() {
           </tbody>
         </table>
       </div>
-      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Create Event" maxWidth="max-w-2xl">{renderEventForm({f:form, setF:setForm, onSub:handleAdd, onCan:()=>setShowAdd(false)})}</Modal>
-      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Event" maxWidth="max-w-2xl">{editItem&&renderEventForm({f:editItem, setF:setEditItem, onSub:handleEdit, onCan:()=>setEditItem(null)})}</Modal>
+      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Create Event" maxWidth="max-w-2xl"><SharedEventForm form={form} setForm={setForm} onSubmit={handleAdd} onCancel={()=>setShowAdd(false)} saving={saving} venues={venues} artForms={ART_FORMS} eventCategories={EVENT_CATEGORIES} /></Modal>
+      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Event" maxWidth="max-w-2xl">{editItem&&<SharedEventForm form={editItem} setForm={setEditItem} onSubmit={handleEdit} onCancel={()=>setEditItem(null)} saving={saving} venues={venues} artForms={ART_FORMS} eventCategories={EVENT_CATEGORIES} />}</Modal>
       <Modal open={!!viewItem} onClose={()=>setViewItem(null)} title="Event Details">
         {viewItem&&<div className="space-y-3">
           {[['Name',viewItem.name],['Date',new Date(viewItem.date).toLocaleDateString('en-IN')],['Venue',viewItem.venue_name],['Category',viewItem.category||'Performing'],['Art Form',viewItem.art_form],['Status',viewItem.status]].map(([k,v])=>(

@@ -1,53 +1,13 @@
 const { query } = require('../config/db')
 const ExcelJS = require('exceljs')
 const { getClient } = require('../config/db')
+const { trimOrNull, parseNonNegativeNumber, parsePositiveInt, asStringArray } = require('../utils/validation')
+const { ensureVenueExists, ensureArtistIdsExist, ensureEventExists } = require('../utils/dbChecks')
+const { MONTHS, MONTH_ORDER, buildExpenseWhere } = require('../utils/expense')
 
-const MONTHS = ['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar']
 const EVENT_STATUSES = ['upcoming','ongoing','completed','cancelled']
 const VENUE_STATUSES = ['active','inactive']
 const AREA_TYPES = ['Urban','Semi-Urban','Rural']
-
-const trimOrNull = (value) => {
-  if (value === undefined || value === null) return null
-  const trimmed = String(value).trim()
-  return trimmed || null
-}
-
-const parseNonNegativeNumber = (value, fallback = 0) => {
-  if (value === undefined || value === null || value === '') return fallback
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
-}
-
-const parsePositiveInt = (value) => {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
-const asStringArray = (value) => {
-  if (value === undefined) return undefined
-  if (!Array.isArray(value)) return null
-  const cleaned = value.map(v => trimOrNull(v)).filter(Boolean)
-  return cleaned
-}
-
-async function ensureVenueExists(client, venueId) {
-  if (!venueId) return { id: null, name: '' }
-  const { rows } = await client.query('SELECT id, name FROM venues WHERE id=$1', [venueId])
-  return rows[0] || null
-}
-
-async function ensureArtistIdsExist(client, artistIds) {
-  if (!artistIds?.length) return true
-  const { rows } = await client.query('SELECT id FROM artists WHERE id = ANY($1::uuid[])', [artistIds])
-  return rows.length === artistIds.length
-}
-
-async function ensureEventExists(client, eventId) {
-  if (!eventId) return true
-  const { rows } = await client.query('SELECT id FROM events WHERE id=$1', [eventId])
-  return Boolean(rows[0])
-}
 
 // ══════════════════════════════════════
 // EVENT CONTROLLER
@@ -418,27 +378,6 @@ exports.exportVenuesExcel = async (req, res, next) => {
 // ══════════════════════════════════════
 // EXPENSE CONTROLLER
 // ══════════════════════════════════════
-const MONTH_ORDER = `array_position(ARRAY['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'],month)`
-const MONTH_TO_NUM = `CASE month WHEN 'Jan' THEN 1 WHEN 'Feb' THEN 2 WHEN 'Mar' THEN 3 WHEN 'Apr' THEN 4 WHEN 'May' THEN 5 WHEN 'Jun' THEN 6 WHEN 'Jul' THEN 7 WHEN 'Aug' THEN 8 WHEN 'Sep' THEN 9 WHEN 'Oct' THEN 10 WHEN 'Nov' THEN 11 WHEN 'Dec' THEN 12 END`
-
-function buildExpenseWhere(query_params) {
-  const { fy, start_date, end_date } = query_params
-  if (start_date && end_date) {
-    return {
-      where: `WHERE make_date(year, ${MONTH_TO_NUM}, 1) BETWEEN $1::date AND $2::date`,
-      params: [start_date, end_date],
-      label: `${start_date} to ${end_date}`
-    }
-  }
-  const fyVal = fy || '2024-25'
-  const [sy] = fyVal.split('-').map(Number)
-  return {
-    where: `WHERE (month=ANY($1) AND year=$2) OR (month=ANY($3) AND year=$4)`,
-    params: [['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],sy,['Jan','Feb','Mar'],sy+1],
-    label: fyVal
-  }
-}
-
 exports.getExpenseSummary = async (req, res, next) => {
   try {
     const { where, params, label } = buildExpenseWhere(req.query)
