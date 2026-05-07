@@ -220,7 +220,7 @@ function ClerkEventsTab() {
   const handleAdd = async (e) => { e.preventDefault(); setSaving(true); try { await eventAPI.create(form); toast.success('Event created'); setShowAdd(false); setForm(empty); fetchAll() } catch(err) { toast.error(err.response?.data?.message||'Failed') } finally { setSaving(false) } }
   const handleEdit = async (e) => { e.preventDefault(); setSaving(true); try { await eventAPI.update(editItem.id, editItem); toast.success('Updated'); setEditItem(null); fetchAll() } catch(err) { toast.error(err.response?.data?.message||'Failed') } finally { setSaving(false) } }
 
-  const EventForm = ({f,setF,onSub,onCan}) => (
+  const renderEventForm = ({f,setF,onSub,onCan}) => (
     <form onSubmit={onSub} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <div className="col-span-2"><label className="label">Event Name *</label><input className="input" value={f.name} onChange={e=>setF({...f,name:e.target.value})} required/></div>
@@ -277,8 +277,8 @@ function ClerkEventsTab() {
           </tbody>
         </table>
       </div>
-      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Create Event" maxWidth="max-w-2xl"><EventForm f={form} setF={setForm} onSub={handleAdd} onCan={()=>setShowAdd(false)}/></Modal>
-      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Event" maxWidth="max-w-2xl">{editItem&&<EventForm f={editItem} setF={setEditItem} onSub={handleEdit} onCan={()=>setEditItem(null)}/>}</Modal>
+      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Create Event" maxWidth="max-w-2xl">{renderEventForm({f:form, setF:setForm, onSub:handleAdd, onCan:()=>setShowAdd(false)})}</Modal>
+      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Event" maxWidth="max-w-2xl">{editItem&&renderEventForm({f:editItem, setF:setEditItem, onSub:handleEdit, onCan:()=>setEditItem(null)})}</Modal>
       <Modal open={!!viewItem} onClose={()=>setViewItem(null)} title="Event Details">
         {viewItem&&<div className="space-y-3">
           {[['Name',viewItem.name],['Date',new Date(viewItem.date).toLocaleDateString('en-IN')],['Venue',viewItem.venue_name],['Category',viewItem.category||'Performing'],['Art Form',viewItem.art_form],['Status',viewItem.status]].map(([k,v])=>(
@@ -430,7 +430,7 @@ function ClerkArtistExpensesTab() {
   const handleAdd = async (e) => { e.preventDefault(); setSaving(true); try { await artistExpenseAPI.create(form); toast.success('Expense added'); setShowAdd(false); setForm(emptyExp); fetchAll() } catch(err) { toast.error(err.response?.data?.message||'Failed') } finally { setSaving(false) } }
   const handleEdit = async (e) => { e.preventDefault(); setSaving(true); try { await artistExpenseAPI.update(editItem.id, editItem); toast.success('Updated'); setEditItem(null); fetchAll() } catch(err) { toast.error(err.response?.data?.message||'Failed') } finally { setSaving(false) } }
 
-  const ExpenseForm = ({f,setF,onSub,onCan,isNew}) => (
+  const renderExpenseForm = ({f,setF,onSub,onCan,isNew}) => (
     <form onSubmit={onSub} className="space-y-4">
       {isNew && <>
         <div><label className="label">Artist *</label>
@@ -495,10 +495,10 @@ function ClerkArtistExpensesTab() {
         </table>
       </div>
       <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Add Artist Expense" maxWidth="max-w-lg">
-        <ExpenseForm f={form} setF={setForm} onSub={handleAdd} onCan={()=>setShowAdd(false)} isNew/>
+        {renderExpenseForm({f:form, setF:setForm, onSub:handleAdd, onCan:()=>setShowAdd(false), isNew:true})}
       </Modal>
       <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Artist Expense" maxWidth="max-w-lg">
-        {editItem&&<ExpenseForm f={editItem} setF={setEditItem} onSub={handleEdit} onCan={()=>setEditItem(null)}/>}
+        {editItem&&renderExpenseForm({f:editItem, setF:setEditItem, onSub:handleEdit, onCan:()=>setEditItem(null)})}
       </Modal>
     </div>
   )

@@ -1,5 +1,53 @@
 const { query } = require('../config/db')
 const ExcelJS = require('exceljs')
+const { getClient } = require('../config/db')
+
+const MONTHS = ['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar']
+const EVENT_STATUSES = ['upcoming','ongoing','completed','cancelled']
+const VENUE_STATUSES = ['active','inactive']
+const AREA_TYPES = ['Urban','Semi-Urban','Rural']
+
+const trimOrNull = (value) => {
+  if (value === undefined || value === null) return null
+  const trimmed = String(value).trim()
+  return trimmed || null
+}
+
+const parseNonNegativeNumber = (value, fallback = 0) => {
+  if (value === undefined || value === null || value === '') return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
+const parsePositiveInt = (value) => {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+const asStringArray = (value) => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) return null
+  const cleaned = value.map(v => trimOrNull(v)).filter(Boolean)
+  return cleaned
+}
+
+async function ensureVenueExists(client, venueId) {
+  if (!venueId) return { id: null, name: '' }
+  const { rows } = await client.query('SELECT id, name FROM venues WHERE id=$1', [venueId])
+  return rows[0] || null
+}
+
+async function ensureArtistIdsExist(client, artistIds) {
+  if (!artistIds?.length) return true
+  const { rows } = await client.query('SELECT id FROM artists WHERE id = ANY($1::uuid[])', [artistIds])
+  return rows.length === artistIds.length
+}
+
+async function ensureEventExists(client, eventId) {
+  if (!eventId) return true
+  const { rows } = await client.query('SELECT id FROM events WHERE id=$1', [eventId])
+  return Boolean(rows[0])
+}
 
 // ══════════════════════════════════════
 // EVENT CONTROLLER
@@ -55,48 +103,180 @@ exports.getArtistEvents = async (req, res, next) => {
 }
 
 exports.createEvent = async (req, res, next) => {
+  const client = await getClient()
   try {
+    await client.query('BEGIN')
     const {
       name, date, venue_id, art_form, participants_max, status='upcoming', description='',
       assigned_artists=[], category='Performing', press_links=[], event_photos=[]
     } = req.body
-    let venue_name = ''
-    if (venue_id) {
-      const vr = await query('SELECT name FROM venues WHERE id=$1', [venue_id])
-      venue_name = vr.rows[0]?.name || ''
+
+    const cleanedName = trimOrNull(name)
+    const cleanedArtForm = trimOrNull(art_form)
+    const maxParticipants = parsePositiveInt(participants_max)
+    const artistIds = Array.isArray(assigned_artists) ? [...new Set(assigned_artists.filter(Boolean))] : null
+    const pressLinks = asStringArray(press_links)
+    const eventPhotos = asStringArray(event_photos)
+
+    if (!cleanedName || !date || !cleanedArtForm) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Name, date and art form are required' })
     }
-    const { rows } = await query(
+    if (!maxParticipants) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Maximum participants must be a positive whole number' })
+    }
+    if (!EVENT_STATUSES.includes(status)) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Invalid event status' })
+    }
+    if (artistIds === null || pressLinks === null || eventPhotos === null) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Invalid event payload' })
+    }
+
+    const venue = await ensureVenueExists(client, trimOrNull(venue_id))
+    if (venue_id && !venue) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Selected venue does not exist' })
+    }
+    if (!(await ensureArtistIdsExist(client, artistIds))) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'One or more assigned artists do not exist' })
+    }
+
+    const { rows } = await client.query(
       `INSERT INTO events (name,date,venue_id,venue_name,art_form,participants_max,status,description,category,press_links,event_photos)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [name, date, venue_id||null, venue_name, art_form, Number(participants_max), status, description,
-       category, JSON.stringify(press_links), JSON.stringify(event_photos)]
+      [cleanedName, date, venue?.id || null, venue?.name || '', cleanedArtForm, maxParticipants, status, trimOrNull(description) || '',
+       trimOrNull(category) || 'Performing', JSON.stringify(pressLinks), JSON.stringify(eventPhotos)]
     )
     const ev = rows[0]
-    for (const aid of assigned_artists)
-      await query('INSERT INTO event_artists (event_id,artist_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [ev.id, aid])
-    if (venue_id) await query('UPDATE venues SET total_events=total_events+1 WHERE id=$1', [venue_id])
+    for (const aid of artistIds)
+      await client.query('INSERT INTO event_artists (event_id,artist_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [ev.id, aid])
+    if (venue?.id) await client.query('UPDATE venues SET total_events=total_events+1 WHERE id=$1', [venue.id])
+    await client.query('COMMIT')
     res.status(201).json({ success: true, message: 'Event created', data: ev })
-  } catch (err) { next(err) }
+  } catch (err) {
+    await client.query('ROLLBACK')
+    next(err)
+  } finally {
+    client.release()
+  }
 }
 
 exports.updateEvent = async (req, res, next) => {
+  const client = await getClient()
   try {
-    const fields = ['name','date','venue_id','art_form','participants_current','participants_max','status','description','category']
+    await client.query('BEGIN')
+    const { rows: existingRows } = await client.query('SELECT * FROM events WHERE id=$1', [req.params.id])
+    if (!existingRows[0]) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ success: false, message: 'Event not found' })
+    }
+
+    const current = existingRows[0]
+    if (req.body.name !== undefined && !trimOrNull(req.body.name)) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Event name is required' })
+    }
+    if (req.body.art_form !== undefined && !trimOrNull(req.body.art_form)) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Art form is required' })
+    }
+    const fields = ['name','date','art_form','status','description','category']
     const updates = [], params = []
     let p = 1
-    if (req.body.venue_id) {
-      const vr = await query('SELECT name FROM venues WHERE id=$1', [req.body.venue_id])
-      if (vr.rows[0]) { updates.push(`venue_name=$${p}`); params.push(vr.rows[0].name); p++ }
+    const nextVenueId = req.body.venue_id !== undefined ? trimOrNull(req.body.venue_id) : current.venue_id
+    const nextVenue = await ensureVenueExists(client, nextVenueId)
+    if (req.body.venue_id !== undefined && nextVenueId && !nextVenue) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Selected venue does not exist' })
     }
-    fields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=$${p}`); params.push(req.body[f]); p++ } })
-    if (req.body.press_links !== undefined) { updates.push(`press_links=$${p}`); params.push(JSON.stringify(req.body.press_links)); p++ }
-    if (req.body.event_photos !== undefined) { updates.push(`event_photos=$${p}`); params.push(JSON.stringify(req.body.event_photos)); p++ }
-    if (!updates.length) return res.status(400).json({ success: false, message: 'Nothing to update' })
+    if (req.body.venue_id !== undefined) {
+      updates.push(`venue_id=$${p}`); params.push(nextVenue?.id || null); p++
+      updates.push(`venue_name=$${p}`); params.push(nextVenue?.name || ''); p++
+    }
+    fields.forEach(f => {
+      if (req.body[f] !== undefined) {
+        const value = ['name','art_form','description','category'].includes(f) ? trimOrNull(req.body[f]) ?? '' : req.body[f]
+        updates.push(`${f}=$${p}`); params.push(value); p++
+      }
+    })
+    if (req.body.status !== undefined && !EVENT_STATUSES.includes(req.body.status)) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Invalid event status' })
+    }
+    if (req.body.participants_current !== undefined) {
+      const currentParticipants = parseNonNegativeNumber(req.body.participants_current, null)
+      if (currentParticipants === null || !Number.isInteger(currentParticipants)) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ success: false, message: 'Current participants must be a non-negative whole number' })
+      }
+      updates.push(`participants_current=$${p}`); params.push(currentParticipants); p++
+    }
+    if (req.body.participants_max !== undefined) {
+      const maxParticipants = parsePositiveInt(req.body.participants_max)
+      if (!maxParticipants) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ success: false, message: 'Maximum participants must be a positive whole number' })
+      }
+      updates.push(`participants_max=$${p}`); params.push(maxParticipants); p++
+    }
+    if (req.body.press_links !== undefined) {
+      const pressLinks = asStringArray(req.body.press_links)
+      if (pressLinks === null) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ success: false, message: 'Press links must be an array' })
+      }
+      updates.push(`press_links=$${p}`); params.push(JSON.stringify(pressLinks)); p++
+    }
+    if (req.body.event_photos !== undefined) {
+      const eventPhotos = asStringArray(req.body.event_photos)
+      if (eventPhotos === null) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ success: false, message: 'Event photos must be an array' })
+      }
+      updates.push(`event_photos=$${p}`); params.push(JSON.stringify(eventPhotos)); p++
+    }
+    if (req.body.assigned_artists !== undefined) {
+      const artistIds = Array.isArray(req.body.assigned_artists) ? [...new Set(req.body.assigned_artists.filter(Boolean))] : null
+      if (artistIds === null || !(await ensureArtistIdsExist(client, artistIds))) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ success: false, message: 'One or more assigned artists do not exist' })
+      }
+      await client.query('DELETE FROM event_artists WHERE event_id=$1', [req.params.id])
+      for (const aid of artistIds)
+        await client.query('INSERT INTO event_artists (event_id,artist_id) VALUES ($1,$2)', [req.params.id, aid])
+    }
+    if (!updates.length && req.body.assigned_artists === undefined) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Nothing to update' })
+    }
+
+    const newParticipantsCurrent = req.body.participants_current !== undefined ? Number(req.body.participants_current) : Number(current.participants_current)
+    const newParticipantsMax = req.body.participants_max !== undefined ? Number(req.body.participants_max) : Number(current.participants_max)
+    if (newParticipantsCurrent > newParticipantsMax) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'Current participants cannot exceed maximum participants' })
+    }
+
     updates.push('updated_at=NOW()'); params.push(req.params.id)
-    const { rows } = await query(`UPDATE events SET ${updates.join(',')} WHERE id=$${p} RETURNING *`, params)
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Event not found' })
+    const { rows } = await client.query(`UPDATE events SET ${updates.join(',')} WHERE id=$${p} RETURNING *`, params)
+
+    if (req.body.venue_id !== undefined && current.venue_id !== nextVenueId) {
+      if (current.venue_id) await client.query('UPDATE venues SET total_events=GREATEST(total_events-1, 0) WHERE id=$1', [current.venue_id])
+      if (nextVenue?.id) await client.query('UPDATE venues SET total_events=total_events+1 WHERE id=$1', [nextVenue.id])
+    }
+
+    await client.query('COMMIT')
     res.json({ success: true, message: 'Event updated', data: rows[0] })
-  } catch (err) { next(err) }
+  } catch (err) {
+    await client.query('ROLLBACK')
+    next(err)
+  } finally {
+    client.release()
+  }
 }
 
 exports.deleteEvent = async (req, res, next) => {
@@ -157,9 +337,17 @@ exports.getVenues = async (req, res, next) => {
 exports.createVenue = async (req, res, next) => {
   try {
     const { name, state, city, area_type='Urban', capacity } = req.body
+    const cleanName = trimOrNull(name)
+    const cleanState = trimOrNull(state)
+    const cleanCity = trimOrNull(city)
+    const cleanAreaType = trimOrNull(area_type) || 'Urban'
+    const parsedCapacity = parsePositiveInt(capacity)
+    if (!cleanName || !cleanState || !cleanCity) return res.status(400).json({ success:false, message:'Name, state and city are required' })
+    if (!AREA_TYPES.includes(cleanAreaType)) return res.status(400).json({ success:false, message:'Invalid area type' })
+    if (!parsedCapacity) return res.status(400).json({ success:false, message:'Capacity must be a positive whole number' })
     const { rows } = await query(
       `INSERT INTO venues (name,state,city,area_type,capacity) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [name, state, city, area_type, Number(capacity)]
+      [cleanName, cleanState, cleanCity, cleanAreaType, parsedCapacity]
     )
     res.status(201).json({ success:true, message:'Venue created', data:rows[0] })
   } catch (err) { next(err) }
@@ -167,10 +355,27 @@ exports.createVenue = async (req, res, next) => {
 
 exports.updateVenue = async (req, res, next) => {
   try {
+    if (req.body.area_type !== undefined && !AREA_TYPES.includes(req.body.area_type)) {
+      return res.status(400).json({ success:false, message:'Invalid area type' })
+    }
+    if (req.body.status !== undefined && !VENUE_STATUSES.includes(req.body.status)) {
+      return res.status(400).json({ success:false, message:'Invalid venue status' })
+    }
+    if (req.body.capacity !== undefined && !parsePositiveInt(req.body.capacity)) {
+      return res.status(400).json({ success:false, message:'Capacity must be a positive whole number' })
+    }
     const fields = ['name','state','city','area_type','capacity','status']
     const updates=[], params=[]
     let p=1
-    fields.forEach(f=>{ if(req.body[f]!==undefined){ updates.push(`${f}=$${p}`); params.push(req.body[f]); p++ }})
+    fields.forEach(f=>{
+      if(req.body[f]!==undefined){
+        let value = req.body[f]
+        if (['name','state','city','area_type','status'].includes(f)) value = trimOrNull(value)
+        if (f === 'capacity') value = parsePositiveInt(value)
+        if (value === null) return
+        updates.push(`${f}=$${p}`); params.push(value); p++
+      }
+    })
     if (!updates.length) return res.status(400).json({ success:false, message:'Nothing to update' })
     updates.push('updated_at=NOW()'); params.push(req.params.id)
     const { rows } = await query(`UPDATE venues SET ${updates.join(',')} WHERE id=$${p} RETURNING *`, params)
@@ -269,9 +474,21 @@ exports.getExpenses = async (req, res, next) => {
 exports.createExpense = async (req, res, next) => {
   try {
     const { month, year, amount, venue=0, equipment=0, travel=0, marketing=0, miscellaneous=0, event_id, remarks='' } = req.body
+    if (!MONTHS.includes(month)) return res.status(400).json({ success:false, message:'Invalid month' })
+    if (!Number.isInteger(Number(year))) return res.status(400).json({ success:false, message:'Invalid year' })
+    const values = {
+      amount: parseNonNegativeNumber(amount, null),
+      venue: parseNonNegativeNumber(venue, 0),
+      equipment: parseNonNegativeNumber(equipment, 0),
+      travel: parseNonNegativeNumber(travel, 0),
+      marketing: parseNonNegativeNumber(marketing, 0),
+      miscellaneous: parseNonNegativeNumber(miscellaneous, 0),
+    }
+    if (Object.values(values).some(v => v === null)) return res.status(400).json({ success:false, message:'Expense amounts must be non-negative numbers' })
+    if (!(await ensureEventExists({ query }, trimOrNull(event_id)))) return res.status(400).json({ success:false, message:'Selected event does not exist' })
     const { rows } = await query(
       `INSERT INTO expenses (month,year,amount,venue,equipment,travel,marketing,miscellaneous,event_id,remarks) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [month, Number(year), Number(amount), Number(venue), Number(equipment), Number(travel), Number(marketing), Number(miscellaneous), event_id||null, remarks]
+      [month, Number(year), values.amount, values.venue, values.equipment, values.travel, values.marketing, values.miscellaneous, trimOrNull(event_id)||null, trimOrNull(remarks)||'']
     )
     res.status(201).json({ success:true, message:'Expense created', data:rows[0] })
   } catch (err) {
@@ -283,9 +500,19 @@ exports.createExpense = async (req, res, next) => {
 exports.updateExpense = async (req, res, next) => {
   try {
     const { amount, venue=0, equipment=0, travel=0, marketing=0, miscellaneous=0, event_id, remarks='' } = req.body
+    const values = {
+      amount: parseNonNegativeNumber(amount, null),
+      venue: parseNonNegativeNumber(venue, 0),
+      equipment: parseNonNegativeNumber(equipment, 0),
+      travel: parseNonNegativeNumber(travel, 0),
+      marketing: parseNonNegativeNumber(marketing, 0),
+      miscellaneous: parseNonNegativeNumber(miscellaneous, 0),
+    }
+    if (Object.values(values).some(v => v === null)) return res.status(400).json({ success:false, message:'Expense amounts must be non-negative numbers' })
+    if (!(await ensureEventExists({ query }, trimOrNull(event_id)))) return res.status(400).json({ success:false, message:'Selected event does not exist' })
     const { rows } = await query(
       `UPDATE expenses SET amount=$1,venue=$2,equipment=$3,travel=$4,marketing=$5,miscellaneous=$6,event_id=$7,remarks=$8 WHERE id=$9 RETURNING *`,
-      [Number(amount),Number(venue),Number(equipment),Number(travel),Number(marketing),Number(miscellaneous),event_id||null,remarks,req.params.id]
+      [values.amount, values.venue, values.equipment, values.travel, values.marketing, values.miscellaneous, trimOrNull(event_id)||null, trimOrNull(remarks)||'', req.params.id]
     )
     if (!rows[0]) return res.status(404).json({ success:false, message:'Expense not found' })
     res.json({ success:true, message:'Expense updated', data:rows[0] })

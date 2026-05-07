@@ -8,6 +8,8 @@ async function initDB() {
     console.log('Creating tables...')
 
     await client.query(`
+      CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
       CREATE TABLE IF NOT EXISTS users (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email      VARCHAR(255) UNIQUE NOT NULL,
@@ -118,6 +120,10 @@ async function initDB() {
 
       ALTER TABLE expenses
         ADD COLUMN IF NOT EXISTS remarks TEXT;
+
+      ALTER TABLE artist_expenses
+        ADD COLUMN IF NOT EXISTS total_expense NUMERIC(12,2) DEFAULT 0,
+        ALTER COLUMN total_expense SET DEFAULT 0;
     `)
 
     console.log('Tables created.')
@@ -133,12 +139,6 @@ async function initDB() {
     const clerkPw  = await bcrypt.hash('clerk123', 10)
     const artistPw = await bcrypt.hash('password123', 10)
 
-    await client.query(
-      `INSERT INTO users (email, password, role, name) VALUES ($1,$2,'admin','Admin User'),($3,$4,'clerk','Clerk User')`,
-      [adminPw, 'admin@culturalzone.com', clerkPw, 'clerk@culturalzone.com']
-    )
-    // fix order
-    await client.query('DELETE FROM users')
     await client.query(
       `INSERT INTO users (email, password, role, name) VALUES ($1,$2,'admin','Admin User'),($3,$4,'clerk','Clerk User')`,
       ['admin@culturalzone.com', adminPw, 'clerk@culturalzone.com', clerkPw]

@@ -2,6 +2,70 @@ const bcrypt = require('bcryptjs')
 const { query, getClient } = require('../config/db')
 const ExcelJS = require('exceljs')
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const AADHAAR_RE = /^\d{12}$/
+
+const trimOrNull = (value) => {
+  if (value === undefined || value === null) return null
+  const trimmed = String(value).trim()
+  return trimmed || null
+}
+
+const parseNonNegativeInt = (value, fallback = 0) => {
+  if (value === undefined || value === null || value === '') return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : null
+}
+
+function validateArtistPayload(payload, { isCreate = false, allowEmail = false } = {}) {
+  const normalized = {}
+  const requiredTextFields = isCreate ? ['full_name', 'email', 'phone', 'art_form', 'location', 'state'] : []
+
+  for (const field of requiredTextFields) {
+    if (!trimOrNull(payload[field])) return { error: `${field.replace(/_/g, ' ')} is required` }
+  }
+
+  const textFields = [
+    'full_name', 'email', 'phone', 'art_form', 'art_form_other', 'location', 'state', 'biography',
+    'educational_qualification', 'educational_qualification_other',
+    'artistic_qualification', 'artistic_qualification_other',
+    'caste', 'caste_other', 'aadhaar_number', 'profile_photo', 'status'
+  ]
+
+  textFields.forEach((field) => {
+    if (payload[field] !== undefined) normalized[field] = trimOrNull(payload[field])
+  })
+
+  if (normalized.email && !allowEmail) delete normalized.email
+  if (normalized.email && !EMAIL_RE.test(normalized.email)) return { error: 'Please provide a valid email address' }
+  if (normalized.aadhaar_number && !AADHAAR_RE.test(normalized.aadhaar_number)) return { error: 'Aadhaar number must be exactly 12 digits' }
+  if (normalized.status && !['active', 'inactive'].includes(normalized.status)) return { error: 'Invalid artist status' }
+
+  if (payload.years_of_experience !== undefined) {
+    normalized.years_of_experience = parseNonNegativeInt(payload.years_of_experience)
+    if (normalized.years_of_experience === null) return { error: 'Years of experience must be a non-negative number' }
+  }
+
+  if (isCreate) {
+    normalized.biography = normalized.biography || ''
+    normalized.state = normalized.state || normalized.location
+  }
+
+  return { normalized }
+}
+
+async function ensureRecordExists(client, table, id) {
+  if (!id) return true
+  const { rows } = await client.query(`SELECT id FROM ${table} WHERE id=$1`, [id])
+  return Boolean(rows[0])
+}
+
+function parseExpenseAmount(value) {
+  if (value === undefined || value === null || value === '') return 0
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
 exports.getArtists = async (req, res, next) => {
   try {
     const { search, status, art_form, location, page = 1, limit = 100 } = req.query
@@ -36,13 +100,17 @@ exports.createArtist = async (req, res, next) => {
   const client = await getClient()
   try {
     await client.query('BEGIN')
+    const { normalized, error } = validateArtistPayload(req.body, { isCreate: true, allowEmail: true })
+    if (error) { await client.query('ROLLBACK'); return res.status(400).json({ success: false, message: error }) }
+
     const {
       full_name, email, phone, art_form, art_form_other, location, state,
-      years_of_experience, biography, password = 'Password@123',
-      educational_qualification, educational_qualification_other,
-      artistic_qualification, artistic_qualification_other,
-      caste, caste_other, aadhaar_number, profile_photo
-    } = req.body
+      years_of_experience = 0, biography = '', educational_qualification,
+      educational_qualification_other, artistic_qualification,
+      artistic_qualification_other, caste, caste_other, aadhaar_number, profile_photo
+    } = normalized
+    const password = trimOrNull(req.body.password) || 'Password@123'
+
     const exists = await client.query('SELECT id FROM users WHERE email=$1', [email])
     if (exists.rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ success: false, message: 'Email already exists' }) }
     const hashed = await bcrypt.hash(password, 10)
@@ -57,7 +125,7 @@ exports.createArtist = async (req, res, next) => {
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
       [
         ur.rows[0].id, full_name, email, phone, art_form, art_form_other||null,
-        location, state||location, Number(years_of_experience)||0, biography||'',
+        location, state||location, years_of_experience, biography,
         educational_qualification||null, educational_qualification_other||null,
         artistic_qualification||null, artistic_qualification_other||null,
         caste||null, caste_other||null, aadhaar_number||null, profile_photo||null
@@ -70,6 +138,7 @@ exports.createArtist = async (req, res, next) => {
 }
 
 exports.updateArtist = async (req, res, next) => {
+  const client = await getClient()
   try {
     const { id } = req.params
     if (req.user.role === 'artist') {
@@ -89,17 +158,59 @@ exports.updateArtist = async (req, res, next) => {
       'caste','caste_other','aadhaar_number','profile_photo'
     ]
     const allowedFields = req.user.role === 'admin' ? adminFields : artistFields
+    const allowEmail = allowedFields.includes('email')
+    const { normalized, error } = validateArtistPayload(req.body, { allowEmail })
+    if (error) return res.status(400).json({ success: false, message: error })
+
+    await client.query('BEGIN')
+    const existing = await client.query('SELECT * FROM artists WHERE id=$1', [id])
+    if (!existing.rows[0]) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ success: false, message: 'Artist not found' })
+    }
+
+    const current = existing.rows[0]
+    const nextEmail = normalized.email || current.email
+    if (normalized.email && normalized.email !== current.email) {
+      const dupUser = await client.query('SELECT id FROM users WHERE email=$1', [normalized.email])
+      if (dupUser.rows[0]) {
+        await client.query('ROLLBACK')
+        return res.status(409).json({ success: false, message: 'Email already exists' })
+      }
+    }
+
     const updates = [], params = []
     let p = 1
-    allowedFields.forEach(f => { if (req.body[f] !== undefined) { updates.push(`${f}=$${p}`); params.push(req.body[f]); p++ } })
-    if (!updates.length) return res.status(400).json({ success: false, message: 'No fields to update' })
+    allowedFields.forEach(f => {
+      if (normalized[f] !== undefined) {
+        updates.push(`${f}=$${p}`)
+        params.push(normalized[f])
+        p++
+      }
+    })
+    if (!updates.length) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ success: false, message: 'No fields to update' })
+    }
     updates.push(`updated_at=NOW()`)
     params.push(id)
-    const { rows } = await query(`UPDATE artists SET ${updates.join(',')} WHERE id=$${p} RETURNING *`, params)
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Artist not found' })
-    if (req.body.full_name) await query('UPDATE users SET name=$1, updated_at=NOW() WHERE email=$2', [req.body.full_name, rows[0].email])
+    const { rows } = await client.query(`UPDATE artists SET ${updates.join(',')} WHERE id=$${p} RETURNING *`, params)
+
+    if (normalized.full_name || normalized.email) {
+      await client.query(
+        'UPDATE users SET name=$1, email=$2, updated_at=NOW() WHERE id=$3',
+        [rows[0].full_name, nextEmail, current.user_id]
+      )
+    }
+
+    await client.query('COMMIT')
     res.json({ success: true, message: 'Artist updated', data: rows[0] })
-  } catch (err) { next(err) }
+  } catch (err) {
+    await client.query('ROLLBACK')
+    next(err)
+  } finally {
+    client.release()
+  }
 }
 
 exports.deleteArtist = async (req, res, next) => {
@@ -175,7 +286,9 @@ exports.getArtistExpenses = async (req, res, next) => {
     if (event_id)  { conds.push(`ae.event_id=$${p}`);  params.push(event_id);  p++ }
     const where = conds.length ? 'WHERE ' + conds.join(' AND ') : ''
     const { rows } = await query(
-      `SELECT ae.*, a.full_name as artist_name, e.name as event_name
+      `SELECT ae.*,
+              (COALESCE(ae.performance_fee, 0) + COALESCE(ae.travel_expense, 0) + COALESCE(ae.accommodation_expense, 0) + COALESCE(ae.other_expenses, 0)) as total_expense,
+              a.full_name as artist_name, e.name as event_name
        FROM artist_expenses ae
        LEFT JOIN artists a ON ae.artist_id=a.id
        LEFT JOIN events e ON ae.event_id=e.id
@@ -187,36 +300,53 @@ exports.getArtistExpenses = async (req, res, next) => {
 }
 
 exports.createArtistExpense = async (req, res, next) => {
+  const client = await getClient()
   try {
+    const artistId = trimOrNull(req.body.artist_id)
+    const eventId = trimOrNull(req.body.event_id)
     const {
-      artist_id, event_id,
       performance_fee=0, travel_expense=0, accommodation_expense=0, other_expenses=0, remarks=''
     } = req.body
-    const total = Number(performance_fee) + Number(travel_expense) + Number(accommodation_expense) + Number(other_expenses)
-    const { rows } = await query(
+    const amounts = [performance_fee, travel_expense, accommodation_expense, other_expenses].map(parseExpenseAmount)
+    if (!artistId) return res.status(400).json({ success: false, message: 'Artist is required' })
+    if (amounts.some(v => v === null)) return res.status(400).json({ success: false, message: 'Expense amounts must be non-negative numbers' })
+    if (!(await ensureRecordExists(client, 'artists', artistId))) return res.status(400).json({ success: false, message: 'Selected artist does not exist' })
+    if (!(await ensureRecordExists(client, 'events', eventId))) return res.status(400).json({ success: false, message: 'Selected event does not exist' })
+    const total = amounts.reduce((sum, value) => sum + value, 0)
+    const { rows } = await client.query(
       `INSERT INTO artist_expenses
-        (artist_id, event_id, performance_fee, travel_expense, accommodation_expense, other_expenses, total_expense, remarks)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [artist_id, event_id||null, Number(performance_fee), Number(travel_expense), Number(accommodation_expense), Number(other_expenses), total, remarks]
+        (artist_id, event_id, performance_fee, travel_expense, accommodation_expense, other_expenses, remarks)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING *,
+         (COALESCE(performance_fee, 0) + COALESCE(travel_expense, 0) + COALESCE(accommodation_expense, 0) + COALESCE(other_expenses, 0)) as total_expense`,
+      [artistId, eventId||null, amounts[0], amounts[1], amounts[2], amounts[3], trimOrNull(remarks)||'']
     )
     res.status(201).json({ success: true, message: 'Artist expense created', data: rows[0] })
   } catch (err) { next(err) }
+  finally { client.release() }
 }
 
 exports.updateArtistExpense = async (req, res, next) => {
+  const client = await getClient()
   try {
     const { performance_fee=0, travel_expense=0, accommodation_expense=0, other_expenses=0, remarks='' } = req.body
-    const total = Number(performance_fee) + Number(travel_expense) + Number(accommodation_expense) + Number(other_expenses)
-    const { rows } = await query(
+    const amounts = [performance_fee, travel_expense, accommodation_expense, other_expenses].map(parseExpenseAmount)
+    if (amounts.some(v => v === null)) return res.status(400).json({ success: false, message: 'Expense amounts must be non-negative numbers' })
+    const eventId = trimOrNull(req.body.event_id)
+    if (!(await ensureRecordExists(client, 'events', eventId))) return res.status(400).json({ success: false, message: 'Selected event does not exist' })
+    const { rows } = await client.query(
       `UPDATE artist_expenses
        SET performance_fee=$1, travel_expense=$2, accommodation_expense=$3, other_expenses=$4,
-           total_expense=$5, remarks=$6, updated_at=NOW()
-       WHERE id=$7 RETURNING *`,
-      [Number(performance_fee), Number(travel_expense), Number(accommodation_expense), Number(other_expenses), total, remarks, req.params.id]
+           remarks=$5, event_id=$6, updated_at=NOW()
+       WHERE id=$7
+       RETURNING *,
+         (COALESCE(performance_fee, 0) + COALESCE(travel_expense, 0) + COALESCE(accommodation_expense, 0) + COALESCE(other_expenses, 0)) as total_expense`,
+      [amounts[0], amounts[1], amounts[2], amounts[3], trimOrNull(remarks)||'', eventId||null, req.params.id]
     )
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Expense not found' })
     res.json({ success: true, message: 'Artist expense updated', data: rows[0] })
   } catch (err) { next(err) }
+  finally { client.release() }
 }
 
 exports.deleteArtistExpense = async (req, res, next) => {

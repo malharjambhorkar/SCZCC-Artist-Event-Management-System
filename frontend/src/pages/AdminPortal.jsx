@@ -372,7 +372,7 @@ function EventsTab() {
   const handleDel=async()=>{ setDeleting(true); try{ await eventAPI.delete(delId); toast.success('Deleted'); setDelId(null); fetchAll() } catch(err){ toast.error(err.response?.data?.message||'Failed') } finally{setDeleting(false)} }
   const handleExport=async()=>{ try{ const r=await eventAPI.exportExcel(); downloadBlob(r,'events.xlsx'); toast.success('Downloaded!') } catch{ toast.error('Export failed') } }
 
-  const EventForm=({f,setF,onSub,onCan})=>{
+  const renderEventForm=({f,setF,onSub,onCan})=>{
     const handleEventPhoto = (e) => {
       const file = e.target.files[0]
       if (!file) return
@@ -456,8 +456,8 @@ function EventsTab() {
           </tbody>
         </table>
       </div>
-      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Create Event" maxWidth="max-w-2xl"><EventForm f={form} setF={setForm} onSub={handleAdd} onCan={()=>setShowAdd(false)}/></Modal>
-      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Event" maxWidth="max-w-2xl">{editItem&&<EventForm f={editItem} setF={setEditItem} onSub={handleEdit} onCan={()=>setEditItem(null)}/>}</Modal>
+      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Create Event" maxWidth="max-w-2xl">{renderEventForm({f:form, setF:setForm, onSub:handleAdd, onCan:()=>setShowAdd(false)})}</Modal>
+      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Event" maxWidth="max-w-2xl">{editItem&&renderEventForm({f:editItem, setF:setEditItem, onSub:handleEdit, onCan:()=>setEditItem(null)})}</Modal>
       <Modal open={!!viewItem} onClose={()=>setViewItem(null)} title="Event Details" maxWidth="max-w-lg">
         {viewItem&&<div className="space-y-3">
           {[['Name',viewItem.name],['Date',new Date(viewItem.date).toLocaleDateString('en-IN')],['Venue',viewItem.venue_name],['Category',viewItem.category||'Performing'],['Art Form',viewItem.art_form],['Participants',`${viewItem.participants_current}/${viewItem.participants_max}`],['Status',viewItem.status]].map(([k,v])=>(
@@ -489,7 +489,7 @@ function VenuesTab() {
   const handleDel=async()=>{ setDeleting(true); try{ await venueAPI.delete(delId); toast.success('Deleted'); setDelId(null); fetch() } catch(err){ toast.error(err.response?.data?.message||'Cannot delete') } finally{setDeleting(false)} }
   const handleExport=async()=>{ try{ const r=await venueAPI.exportExcel(); downloadBlob(r,'venues.xlsx'); toast.success('Downloaded!') } catch{ toast.error('Export failed') } }
 
-  const VenueForm=({f,setF,onSub,onCan})=>(
+  const renderVenueForm=({f,setF,onSub,onCan})=>(
     <form onSubmit={onSub} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <div className="col-span-2"><label className="label">Venue Name *</label><input className="input" value={f.name} onChange={e=>setF({...f,name:e.target.value})} required/></div>
@@ -536,8 +536,8 @@ function VenuesTab() {
           </tbody>
         </table>
       </div>
-      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Add Venue"><VenueForm f={form} setF={setForm} onSub={handleAdd} onCan={()=>setShowAdd(false)}/></Modal>
-      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Venue">{editItem&&<VenueForm f={editItem} setF={setEditItem} onSub={handleEdit} onCan={()=>setEditItem(null)}/>}</Modal>
+      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Add Venue">{renderVenueForm({f:form, setF:setForm, onSub:handleAdd, onCan:()=>setShowAdd(false)})}</Modal>
+      <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Venue">{editItem&&renderVenueForm({f:editItem, setF:setEditItem, onSub:handleEdit, onCan:()=>setEditItem(null)})}</Modal>
       <ConfirmModal open={!!delId} onClose={()=>setDelId(null)} onConfirm={handleDel} loading={deleting} title="Delete Venue" message="This will remove the venue permanently."/>
     </div>
   )
@@ -713,7 +713,7 @@ function ArtistExpensesTab() {
   const handleEdit=async(e)=>{ e.preventDefault(); setSaving(true); try{ await artistExpenseAPI.update(editItem.id,editItem); toast.success('Updated'); setEditItem(null); fetchAll() } catch(err){ toast.error(err.response?.data?.message||'Failed') } finally{setSaving(false)} }
   const handleDel=async()=>{ setDeleting(true); try{ await artistExpenseAPI.delete(delId); toast.success('Deleted'); setDelId(null); fetchAll() } catch(err){ toast.error(err.response?.data?.message||'Failed') } finally{setDeleting(false)} }
 
-  const ExpenseForm=({f,setF,onSub,onCan,isNew})=>(
+  const renderExpenseForm=({f,setF,onSub,onCan,isNew})=>(
     <form onSubmit={onSub} className="space-y-4">
       {isNew && <>
         <div><label className="label">Artist *</label>
@@ -781,10 +781,10 @@ function ArtistExpensesTab() {
         </table>
       </div>
       <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="Add Artist Expense" maxWidth="max-w-lg">
-        <ExpenseForm f={form} setF={setForm} onSub={handleAdd} onCan={()=>setShowAdd(false)} isNew/>
+        {renderExpenseForm({f:form, setF:setForm, onSub:handleAdd, onCan:()=>setShowAdd(false), isNew:true})}
       </Modal>
       <Modal open={!!editItem} onClose={()=>setEditItem(null)} title="Edit Artist Expense" maxWidth="max-w-lg">
-        {editItem&&<ExpenseForm f={editItem} setF={setEditItem} onSub={handleEdit} onCan={()=>setEditItem(null)}/>}
+        {editItem&&renderExpenseForm({f:editItem, setF:setEditItem, onSub:handleEdit, onCan:()=>setEditItem(null)})}
       </Modal>
       <ConfirmModal open={!!delId} onClose={()=>setDelId(null)} onConfirm={handleDel} loading={deleting} title="Delete Artist Expense"/>
     </div>
